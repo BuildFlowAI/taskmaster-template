@@ -1,0 +1,13 @@
+{
+  "name": "taskmaster",
+  "version": "1.0.0",
+  "description": "TaskMaster - Full-stack task management application",
+  "private": true,
+  "scripts": {
+    "test": "echo \"No tests yet - tests will be added as you progress through tasks\" && exit 0",
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install"
+  },
+  "keywords": ["taskmaster", "fullstack", "learning"],
+  "author": "",
+  "license": "MIT"
+}
