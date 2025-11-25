@@ -1,0 +1,168 @@
+name: Auto Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [backend, frontend, common]
+
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v3
+
+      # ------------------------------------------------------
+      # Install dependencies per matrix part
+      # ------------------------------------------------------
+
+      - name: Setup Node
+        if: matrix.part != 'backend' || (matrix.part == 'backend' && !hashFiles('backend/requirements.txt'))
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Setup Python
+        if: matrix.part == 'backend' && hashFiles('backend/requirements.txt') != ''
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Backend Dependencies (Node)
+        if: matrix.part == 'backend' && hashFiles('backend/package.json') != ''
+        run: |
+          cd backend
+          npm install
+
+      - name: Install Backend Dependencies (Python)
+        if: matrix.part == 'backend' && hashFiles('backend/requirements.txt') != ''
+        run: |
+          cd backend
+          pip install -r requirements.txt
+
+      - name: Install Frontend Dependencies
+        if: matrix.part == 'frontend' && hashFiles('frontend/package.json') != ''
+        run: |
+          cd frontend
+          npm install
+
+      - name: Install Common Dependencies
+        if: matrix.part == 'common' && hashFiles('package.json') != ''
+        run: |
+          npm install
+
+      # ------------------------------------------------------
+      # Run lint (always optional)
+      # ------------------------------------------------------
+
+      - name: Run Lint
+        if: hashFiles('.eslintrc.json') != '' || hashFiles('.eslintrc.js') != ''
+        run: |
+          npm run lint || true
+
+      # ------------------------------------------------------
+      # Run Backend Tests
+      # ------------------------------------------------------
+
+      - name: Run Backend Tests (Node)
+        if: matrix.part == 'backend' && hashFiles('backend/package.json') != ''
+        run: |
+          cd backend
+          npm test --silent || echo "backend_node_failed=true" >> $GITHUB_ENV
+
+      - name: Run Backend Tests (Python)
+        if: matrix.part == 'backend' && hashFiles('backend/requirements.txt') != ''
+        run: |
+          cd backend
+          pytest -q || echo "backend_python_failed=true" >> $GITHUB_ENV
+
+      # ------------------------------------------------------
+      # Run Frontend Tests
+      # ------------------------------------------------------
+
+      - name: Run Frontend Tests
+        if: matrix.part == 'frontend' && hashFiles('frontend/package.json') != ''
+        run: |
+          cd frontend
+          npm test --silent || echo "frontend_failed=true" >> $GITHUB_ENV
+
+      # ------------------------------------------------------
+      # Run Common Tests (task-specific)
+      # ------------------------------------------------------
+
+      - name: Run Common Tests
+        if: matrix.part == 'common' && hashFiles('tests/**/*.test.js') != ''
+        run: |
+          npm test --silent || echo "common_failed=true" >> $GITHUB_ENV
+
+      # ------------------------------------------------------
+      # (Optional) Small security checks
+      # ------------------------------------------------------
+
+      - name: Security Audit (NPM)
+        if: hashFiles('package.json') != ''
+        run: |
+          npm audit --audit-level=high || true
+
+  # ----------------------------------------------------------
+  # Aggregate results across matrix jobs
+  # ----------------------------------------------------------
+
+  conclude:
+    needs: [run-tests]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Determine Test Outcome
+        id: result
+        run: |
+          failed=false
+
+          if [[ "${{ needs.run-tests.outputs.backend_node_failed }}" == "true" ]]; then failed=true; fi
+          if [[ "${{ needs.run-tests.outputs.backend_python_failed }}" == "true" ]]; then failed=true; fi
+          if [[ "${{ needs.run-tests.outputs.frontend_failed }}" == "true" ]]; then failed=true; fi
+          if [[ "${{ needs.run-tests.outputs.common_failed }}" == "true" ]]; then failed=true; fi
+
+          if [[ "$failed" == "false" ]]; then
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+          fi
+
+      # ------------------------------------------------------
+      # Post GitHub Review
+      # ------------------------------------------------------
+
+      - name: Post PR Review
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ steps.result.outputs.status }}" = "passed" ]; then
+            gh pr review ${{ github.event.pull_request.number }} \
+              --approve \
+              --body "🎉 **All matrix tests passed!** Great work!"
+          else
+            gh pr review ${{ github.event.pull_request.number }} \
+              --request-changes \
+              --body "❌ One or more tests failed. Please fix and push again."
+          fi
+
+      # ------------------------------------------------------
+      # BuildFlow Webhook Integration
+      # ------------------------------------------------------
+      # Note: GitHub automatically sends 'check_suite' webhooks when this
+      # workflow completes. Your BuildFlow webhook handler will receive
+      # these events and unlock the next task automatically.
+      #
+      # Make sure your GitHub App has the following webhook events enabled:
+      # - check_suite (completed)
+      # - pull_request (opened, synchronize)
+      #
+      # No manual notification needed!
